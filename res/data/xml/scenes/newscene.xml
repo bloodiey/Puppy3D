@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<scene version="1">
+  <object type="cube" name="Cube" x="2" y="0" z="0" rx="0" ry="0" rz="0" sx="1" sy="1" sz="1" r="0.25" g="0.649999976" b="0.949999988" />
+  <object type="model" name="SkeuoKitty" source="../../../../export/linux/bin/res/mdl/SkeuoKitty.glb" x="0" y="2.77555756e-17" z="1.39999998" rx="0" ry="0" rz="0" sx="1" sy="1" sz="1" r="0.25" g="0.649999976" b="0.949999988" />
+</scene>

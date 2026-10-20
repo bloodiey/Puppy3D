@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Puppy3D editor and game engine setup, features, scripting, and asset support.">
+    <title>Puppy3D — Editor and Engine</title>
+    <style>
+        :root {
+            color-scheme: dark;
+            font-family: "Segoe UI", sans-serif;
+            background: #171a21;
+            color: #e7eaf0;
+        }
+        body {
+            max-width: 920px;
+            margin: 0 auto;
+            padding: 2rem;
+            line-height: 1.65;
+        }
+        h1, h2 { color: #8fc7ff; }
+        code, pre {
+            background: #242a35;
+            border-radius: 4px;
+        }
+        code { padding: 0.12rem 0.3rem; }
+        pre { overflow-x: auto; padding: 1rem; }
+        a { color: #8fc7ff; }
+        li { margin: 0.3rem 0; }
+        .note {
+            border-left: 3px solid #8fc7ff;
+            padding: 0.25rem 1rem;
+            background: #202530;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>Puppy3D</h1>
+        <p>A small C++17 desktop editor and prototype 3D game engine, built with GTK 3, OpenGL 3.2, libepoxy, SDL2_mixer, and Lua 5.4.</p>
+    </header>
+
+    <main>
+        <section>
+            <h2>Developer documentation</h2>
+            <p>For a source-by-source guide to the engine and practical notes on modifying GTK, OpenGL/libepoxy, SDL2_mixer, input, scene files, GLB imports, and Lua, see the <a href="DevDocs/codeDoc.htm">Puppy3D developer documentation</a>.</p>
+        </section>
+
+        <section>
+            <h2>Build and run</h2>
+            <p>Install the platform dependencies with the included setup script:</p>
+            <pre><code>setup-windows-mingw.bat
+bash setup-ubuntu.sh
+bash setup-fedora.sh
+bash setup-arch.sh
+bash setup-suse.sh</code></pre>
+            <p>The Windows script installs packages through MSYS2 and defaults to <code>C:\msys64</code>; set <code>MSYS2_ROOT</code> if MSYS2 is installed elsewhere. Run <code>make</code> from an MSYS2 MINGW64 shell. On Linux, run <code>make</code> in the project directory after the matching setup script.</p>
+            <p>Alternatively, install the Windows dependencies directly from an MSYS2 MINGW64 shell:</p>
+            <pre><code>pacman -S --needed mingw-w64-x86_64-gcc mingw-w64-x86_64-make mingw-w64-x86_64-pkgconf mingw-w64-x86_64-gtk3 mingw-w64-x86_64-SDL2 mingw-w64-x86_64-SDL2_mixer mingw-w64-x86_64-fluidsynth mingw-w64-x86_64-lua54 mingw-w64-x86_64-nlohmann-json mingw-w64-x86_64-libepoxy</code></pre>
+            <p>Build from the project directory:</p>
+            <pre><code>make
+make run
+make test
+make clean</code></pre>
+            <p>The executable is written to <code>export/windows/bin/Puppy3D.exe</code> on Windows and <code>export/linux/bin/Puppy3D</code> on Linux. The build copies project resources beside it into the corresponding <code>res/</code> folder.</p>
+        </section>
+
+        <section>
+            <h2>Editor</h2>
+            <ul>
+                <li>The Resources sidebar browses the <code>res/</code> asset tree. Double-click a text file to open it.</li>
+                <li>The File Editor supports creating, opening, editing, and saving UTF-8 text files. Binary files are read-only; files over 8 MiB are not opened in the text editor.</li>
+                <li>The Properties panel shows the selected resource's name, path, type, and size.</li>
+                <li>The 3D View tab uses a GTK OpenGL 3.2 core context, libepoxy, and GLSL shaders. Drag the panel handles to detach Resources, Object Explorer, or Properties into independent windows.</li>
+                <li>Select an audio asset and use Play Audio or Stop Audio. SDL2_mixer supports common formats such as WAV, OGG, MP3, and FLAC. MIDI playback uses FluidSynth and the SoundFont at <code>res/sf2/gm.sf2</code>; it is disabled when either the backend or soundfont is unavailable.</li>
+            </ul>
+        </section>
+
+        <section>
+            <h2>Viewport and object editing</h2>
+            <ul>
+                <li>Click the 3D View and use <code>W</code>/<code>S</code> to move forward/back, <code>A</code>/<code>D</code> to strafe, <code>E</code> to rise, and <code>Q</code> to descend.</li>
+                <li>Hold the right mouse button and drag to orbit the camera. Left-click an object to select it in Object Explorer.</li>
+                <li>In Properties, choose Move, Rotate, or Scale, then press the axis arrow buttons. Each click moves by 0.25 units, rotates by 5 degrees, or scales by 0.1.</li>
+                <li>Enable <strong>Edit Cube Vertices</strong>, select vertex 0–7, and edit its local X/Y/Z coordinates. The viewport displays the cube's vertex handles; edited vertices are saved in scene XML.</li>
+            </ul>
+            <p class="note">Vertex editing currently applies to cubes. Object picking uses approximate bounds, so clicks near overlapping objects may select the wrong object.</p>
+        </section>
+
+        <section>
+            <h2>Keyboard and gamepad input</h2>
+            <p>The editor forwards its window's keyboard events to the input service and polls SDL2 GameController devices while the editor runs. Controllers can be connected or removed while the editor is open. Keyboard state is cleared when the editor loses focus.</p>
+            <ul>
+                <li><code>W</code>/<code>Up</code>: forward; <code>S</code>/<code>Down</code>: backward; <code>A</code>/<code>Left</code>: left; <code>D</code>/<code>Right</code>: right.</li>
+                <li><code>Space</code>: jump; <code>Enter</code>: confirm; <code>Escape</code>: cancel.</li>
+                <li>Gamepad left stick and D-pad move; A jumps, Start confirms, and B cancels.</li>
+            </ul>
+            <p>Lua scripts can read input during <code>update(delta_time)</code>:</p>
+            <pre><code>function update(delta_time)
+    if input.is_down("jump") then
+        -- React to the held jump action.
+    end
+    local horizontal = input.axis("move_x")
+    local forward = input.axis("move_y")
+    local has_gamepad = input.gamepad_connected()
+end</code></pre>
+            <p><code>input.is_down(name)</code> supports <code>forward</code>, <code>backward</code>/<code>back</code>, <code>left</code>, <code>right</code>, <code>jump</code>, <code>confirm</code>, and <code>cancel</code>. <code>input.axis(name)</code> supports <code>move_x</code> and <code>move_y</code>, returning values clamped to -1..1 with a gamepad stick dead zone. <code>input.gamepad_connected()</code> reports whether a recognized SDL game controller is connected.</p>
+        </section>
+
+        <section>
+            <h2>Importing GLB models</h2>
+            <p>Use <strong>Import GLB</strong> to choose a glTF 2.0 binary <code>.glb</code> model. You can also double-click a <code>.glb</code> file in the Resources tree. Imported models become scene objects and appear in the scene outliner. Save Scene stores references to the source models rather than copying them.</p>
+            <p>The importer supports triangle primitives, indexed or non-indexed meshes, node transforms, normals (or generated normals), and the first UV set (<code>TEXCOORD_0</code>). It imports PBR base-color factors and base-color PNG/JPEG textures, including images embedded in the GLB. External image and buffer URIs are resolved relative to the model file.</p>
+            <p>Select a model with animation clips, choose a clip in the Animation inspector, then use Play/Pause or drag the timeline to preview it. Translation, rotation, and scale channels with STEP, LINEAR, and CUBICSPLINE interpolation are supported.</p>
+            <p class="note">Additional glTF material maps (metallic/roughness, normal, occlusion, and emissive), skeletal skinning, morph targets, Draco compression, and required glTF extensions are not implemented. Only triangle primitives are rendered. Texture images are limited to 8192 pixels per side and 64 megapixels.</p>
+        </section>
+
+        <section>
+            <h2>XML scene modeling</h2>
+            <p>Use <strong>Add Cube</strong> or <strong>Import GLB</strong> to build a level. Select objects in the Scene Objects outliner and edit position, rotation, scale, and name in the inspector. <strong>Save Scene</strong> writes a versioned XML scene; <strong>Open Scene</strong> restores cubes and referenced GLB models. Model paths are saved relative to the scene file when possible.</p>
+            <p>The editor supports local vertex editing for cube corners and stores those coordinates in version 1 scene XML. Older XML files continue to load with the standard cube corners. GLB mesh vertices are not editable; sculpting and material authoring are also not provided.</p>
+            <pre><code>&lt;scene version="1"&gt;
+  &lt;object type="cube" name="Floor" x="0" y="-1" z="0"
+          rx="0" ry="0" rz="0" sx="8" sy="0.2" sz="8" /&gt;
+  &lt;object type="model" name="Prop" source="models/prop.glb"
+          x="2" y="0" z="1" rx="0" ry="45" rz="0" sx="1" sy="1" sz="1" /&gt;
+&lt;/scene&gt;</code></pre>
+        </section>
+
+        <section>
+            <h2>Lua scripting</h2>
+            <p>Open a <code>.lua</code> file and click <strong>Run Lua</strong>. The script is executed in the embedded Lua 5.4 runtime; if it defines <code>update(delta_time)</code>, that function is called by the editor's frame timer. The bundled example is <code>res/lua/demo.lua</code>.</p>
+            <pre><code>engine.clear_scene()
+local cube = engine.add_cube("My cube", 0, 0, 0)
+engine.set_color(cube, 0.25, 0.65, 0.95)
+local angle = 0
+
+function update(delta_time)
+    angle = (angle + 45 * delta_time) % 360
+    engine.set_rotation(cube, 20, angle, 0)
+end</code></pre>
+            <ul>
+                <li><code>engine.clear_scene()</code> removes scene objects and imported meshes.</li>
+                <li><code>engine.add_cube(name, x, y, z)</code> creates a cube and returns its integer ID.</li>
+                <li><code>engine.set_position(id, x, y, z)</code> sets a cube's position.</li>
+                <li><code>engine.set_rotation(id, x, y, z)</code> sets its Euler rotation in degrees.</li>
+                <li><code>engine.set_color(id, r, g, b)</code> sets its RGB color; components are clamped to 0–1.</li>
+            </ul>
+            <p>The Lua runtime exposes base, table, string, math, and UTF-8 libraries, plus the engine API. It does not expose file-loading helpers such as <code>dofile</code> and <code>loadfile</code>.</p>
+        </section>
+
+        <section>
+            <h2>Project layout</h2>
+            <ul>
+                <li><code>src/Editor/</code> — GTK editor, file editing, audio controls, and frame callbacks.</li>
+                <li><code>src/Engine/</code> — scene objects, OpenGL lifecycle, and model integration.</li>
+                <li><code>src/Importing/</code> — GLB parsing, images, mesh data, and animation import.</li>
+                <li><code>src/Input/</code>, <code>src/Scripting/</code>, and <code>src/Scene/</code> — input service, Lua runtime, and XML scene documents.</li>
+                <li><code>src/Rendering/</code> — converts EngineVar polygons into indexed meshes for rendering.</li>
+                <li><code>src/EngineVariables/</code> and <code>src/GeneralPuppy3dObjects/</code> — geometry values and transformable object classes.</li>
+                <li><code>setup-*.sh</code> and <code>setup-windows-mingw.bat</code> — platform dependency installers.</li>
+                <li><code>res/</code> — images, data, scripts, and other project assets.</li>
+                <li><code>export/linux/bin/res/</code> and <code>export/windows/bin/res/</code> — platform resource copies produced by the Makefile.</li>
+                <li><code>src/Scene/SceneDocument.cpp</code> — XML scene serialization and model reference loading.</li>
+                <li><code>tests/SceneDocumentTest.cpp</code> — XML round-trip, polygon mesh conversion, and animated GLB integration coverage.</li>
+            </ul>
+        </section>
+    </main>
+</body>
+</html>

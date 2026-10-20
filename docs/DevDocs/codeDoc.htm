@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Puppy3D source-code guide: engine architecture, rendering, editor, audio, input, scenes, GLB, and Lua.">
+    <title>Puppy3D Developer Documentation</title>
+    <style>
+        :root {
+            color-scheme: dark;
+            font-family: "Segoe UI", sans-serif;
+            background: #171a21;
+            color: #e7eaf0;
+            line-height: 1.65;
+        }
+        body { max-width: 1120px; margin: 0 auto; padding: 2rem; }
+        h1, h2, h3 { color: #8fc7ff; line-height: 1.25; }
+        h1 { margin-bottom: 0.3rem; }
+        h2 { margin-top: 2.5rem; border-bottom: 1px solid #394252; padding-bottom: 0.35rem; }
+        h3 { margin-top: 1.8rem; }
+        a { color: #8fc7ff; }
+        code, pre { background: #242a35; border-radius: 4px; }
+        code { padding: 0.1rem 0.3rem; }
+        pre { overflow-x: auto; padding: 1rem; border: 1px solid #343d4c; }
+        pre code { padding: 0; }
+        li { margin: 0.32rem 0; }
+        table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
+        th, td { border: 1px solid #394252; padding: 0.55rem 0.7rem; text-align: left; vertical-align: top; }
+        th { background: #242a35; color: #8fc7ff; }
+        .lead, .callout { background: #202530; padding: 0.8rem 1rem; border-left: 3px solid #8fc7ff; }
+        .warning { border-left-color: #ffbf69; }
+        .muted { color: #b4bdcc; }
+        nav { background: #202530; padding: 1rem 1.4rem; border-radius: 6px; }
+        nav ul { columns: 2; padding-left: 1.2rem; }
+        .file { white-space: nowrap; }
+        @media (max-width: 700px) {
+            body { padding: 1rem; }
+            nav ul { columns: 1; }
+            table { display: block; overflow-x: auto; }
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <p><a href="../index.html">Puppy3D user documentation</a></p>
+        <h1>Puppy3D Developer Documentation</h1>
+        <p class="lead">A source-oriented guide to the C++ code in <code>src/</code>, the path an editor frame takes, and practical starting points for changing the engine. The snippets are patterns to adapt in the existing files, not a separate API or additional source code.</p>
+    </header>
+
+    <nav aria-label="Contents">
+        <strong>Contents</strong>
+        <ul>
+            <li><a href="#architecture">Architecture and frame flow</a></li>
+            <li><a href="#source-map">Source file map</a></li>
+            <li><a href="#editor">Editor and GTK 3</a></li>
+            <li><a href="#engine">Engine data and scene API</a></li>
+            <li><a href="#rendering">OpenGL and libepoxy</a></li>
+            <li><a href="#glb">GLB model import</a></li>
+            <li><a href="#animation">Model animation</a></li>
+            <li><a href="#scenes">XML scene files</a></li>
+            <li><a href="#input">SDL2 controller and input service</a></li>
+            <li><a href="#lua">Lua 5.4 scripting</a></li>
+            <li><a href="#audio">SDL2_mixer audio</a></li>
+            <li><a href="#build">Build and dependency wiring</a></li>
+            <li><a href="#modifying">How to make common changes</a></li>
+            <li><a href="#limits">Current scope and limitations</a></li>
+        </ul>
+    </nav>
+
+    <main>
+        <section id="architecture">
+            <h2>1. Architecture and frame flow</h2>
+            <p>Puppy3D is a GTK desktop editor that owns an <code>EngineScene</code>, an <code>InputService</code>, and an optional <code>LuaRuntime</code>. The editor assembles and connects the UI; the scene owns editable objects and rendering data; helper modules load or save file formats.</p>
+            <pre><code>GTK window and callbacks (main.cpp)
+        |                         |
+        | UI changes               | timer (~16 ms)
+        v                         v
+    EngineScene &lt;--- LuaRuntime    InputService
+        |                              ^
+        |                              |
+        +---- GlbImporter              +---- GTK key/mouse events
+        +---- Rendering/EngineVarMeshRenderer
+        |
+        +---- SceneDocument (XML read/write)
+        |
+        +---- OpenGL calls in GtkGLArea render callback</code></pre>
+            <ol>
+                <li><code>main()</code> starts GTK, initializes the input and audio subsystems, creates the Lua runtime, discovers <code>res/</code>, and builds the window.</li>
+                <li>GTK's <code>realize</code> signal makes the OpenGL context current and initializes the engine's GPU objects.</li>
+                <li>A GLib timer runs approximately every 16 ms. <code>onEngineTick()</code> polls controllers, measures elapsed time, updates Lua and model animations, clears per-frame input edges, and queues a redraw.</li>
+                <li>GTK invokes <code>onOpenGlRender()</code> with a current context. The callback asks <code>EngineScene::render()</code> to draw the grid, cubes, and models.</li>
+                <li>GTK input signals forward key and mouse state into <code>InputService</code>. Lua reads that state when its <code>update(delta_time)</code> function is called.</li>
+            </ol>
+            <p class="callout warning"><strong>Important ownership rule:</strong> OpenGL handles are tied to a current GL context. Initialize them after the <code>GtkGLArea</code> is realized, render only in its render callback, and release them while that context is current during window shutdown.</p>
+        </section>
+
+        <section id="source-map">
+            <h2>2. Source file map</h2>
+            <table>
+                <thead><tr><th>Source</th><th>What it owns / where to edit</th></tr></thead>
+                <tbody>
+                    <tr><td><a class="file" href="../../src/Editor/main.cpp">src/Editor/main.cpp</a></td><td>Application startup, GTK widget tree, signal callbacks, text-file editor, resource browser, audio controls, scene inspector, and the frame timer. UI behavior usually starts here.</td></tr>
+                    <tr><td><a class="file" href="../../src/Editor/ViewportController.h">src/Editor/ViewportController.h</a> and <a class="file" href="../../src/Editor/ViewportController.cpp">src/Editor/ViewportController.cpp</a></td><td>Camera translation and orbit math, separated from GTK event callbacks and covered by the scene integration test.</td></tr>
+                    <tr><td><a class="file" href="../../src/Engine/Engine.h">src/Engine/Engine.h</a> and <a class="file" href="../../src/Engine/Engine.cpp">src/Engine/Engine.cpp</a></td><td>Public engine data structures, the <code>EngineScene</code> interface, scene object storage, transforms, animation evaluation, OpenGL lifecycle, camera-driven rendering, ray picking, and editable cube geometry.</td></tr>
+                    <tr><td><a class="file" href="../../src/Rendering/EngineVarMeshRenderer.h">src/Rendering/EngineVarMeshRenderer.h</a> and <a class="file" href="../../src/Rendering/EngineVarMeshRenderer.cpp">src/Rendering/EngineVarMeshRenderer.cpp</a></td><td>Converts <code>EngineVar::Polygon</code> edges and vertices into indexed engine meshes for the regular model renderer.</td></tr>
+                    <tr><td><a class="file" href="../../src/EngineVariables/EngineVariables.h">src/EngineVariables/EngineVariables.h</a> and <code>src/EngineVariables/*</code></td><td>Aggregate include and class-specific headers for the <code>Vector2</code>, <code>Vector3</code>, <code>Color3</code>, <code>Vertex</code>, <code>Edge</code>, and <code>Polygon</code> geometry types.</td></tr>
+                    <tr><td><a class="file" href="../../src/GeneralPuppy3dObjects/GeneralObjects.h">src/GeneralPuppy3dObjects/GeneralObjects.h</a> and <code>src/GeneralPuppy3dObjects/*</code></td><td>Aggregate include and class-specific headers for transformable 3D objects and polygon model meshes.</td></tr>
+                    <tr><td><a class="file" href="../../src/Importing/GlbImporter.h">src/Importing/GlbImporter.h</a> and <a class="file" href="../../src/Importing/GlbImporter.cpp">src/Importing/GlbImporter.cpp</a></td><td>GLB parsing, accessor decoding, node traversal, mesh/material extraction, images, and animation data import.</td></tr>
+                    <tr><td><a class="file" href="../../src/Scene/SceneDocument.h">src/Scene/SceneDocument.h</a> and <a class="file" href="../../src/Scene/SceneDocument.cpp">src/Scene/SceneDocument.cpp</a></td><td>Version 1 XML scene serialization and parsing. Model paths are resolved relative to the scene file.</td></tr>
+                    <tr><td><a class="file" href="../../src/Input/InputService.h">src/Input/InputService.h</a> and <a class="file" href="../../src/Input/InputService.cpp">src/Input/InputService.cpp</a></td><td>Keyboard/mouse state, SDL game-controller state, action mapping, axes, and edge-triggered "pressed this frame" values.</td></tr>
+                    <tr><td><a class="file" href="../../src/Scripting/LuaRuntime.h">src/Scripting/LuaRuntime.h</a> and <a class="file" href="../../src/Scripting/LuaRuntime.cpp">src/Scripting/LuaRuntime.cpp</a></td><td>Lua state lifetime, exposed Lua tables/functions, script execution, and per-frame <code>update</code> calls.</td></tr>
+                    <tr><td><a class="file" href="../../Makefile">Makefile</a></td><td>Compiler flags, pkg-config dependencies, platform output paths, tests, and resource copying.</td></tr>
+                </tbody>
+            </table>
+        </section>
+
+        <section id="editor">
+            <h2>3. Editor and GTK 3</h2>
+            <p><code>main.cpp</code> uses GTK's C API from C++. The private <code>Editor</code> struct is the shared application state passed to callbacks as <code>gpointer</code>. It contains widget pointers, file paths, dirty/editable flags, audio state, and the scene/input/Lua objects.</p>
+            <h3>How GTK is put together</h3>
+            <ul>
+                <li><code>buildWindow()</code> creates the window, toolbar, split panes, resource tree, notebook tabs, 3D area, properties panel, scene outliner, and inspector controls.</li>
+                <li><code>g_signal_connect()</code> wires widget signals such as <code>clicked</code>, <code>changed</code>, <code>row-activated</code>, <code>realize</code>, and <code>render</code> to C++ functions.</li>
+                <li>GTK owns the event loop. Callbacks should update state/widgets and return promptly; the application does not create its own UI thread.</li>
+                <li><code>onTreeSelectionChanged()</code> updates the selected resource and properties. Double-clicking a folder expands it, a GLB imports it, and other files open in the editor.</li>
+                <li><code>openFile()</code> checks that the target is a regular file, enforces an 8 MiB size limit, reads bytes, and marks binary or invalid UTF-8 files as read-only. <code>saveCurrent()</code>/<code>saveAs()</code> write editable text and manage dirty state.</li>
+                <li>The scene outliner and inspector callbacks select objects and route edits to <code>EngineScene</code>. A guard flag prevents programmatic widget updates from being mistaken for user edits.</li>
+                <li><code>showError()</code> presents GTK error dialogs; <code>setStatus()</code> updates the status bar.</li>
+            </ul>
+            <h3>GTK callback pattern</h3>
+            <p>For a new button, create it during <code>buildWindow()</code>, connect its signal, and write a callback with GTK's expected signature. Keep the state change in the callback and refresh the UI explicitly.</p>
+            <pre><code>void onResetClicked(GtkButton*, gpointer userData)
+{
+    Editor&amp; editor = *static_cast&lt;Editor*&gt;(userData);
+    editor.scene.clear();
+    refreshSceneOutliner(editor, 0);
+    gtk_gl_area_queue_render(GTK_GL_AREA(editor.glArea));
+}
+
+// In buildWindow(), alongside the other toolbar buttons:
+g_signal_connect(button, "clicked", G_CALLBACK(onResetClicked), &amp;editor);</code></pre>
+            <p class="muted">This is a schematic extension example: use the existing <code>makeToolButton()</code> helper in <code>main.cpp</code> when adding a normal toolbar button, and ensure callbacks are declared before their use in <code>buildWindow()</code>.</p>
+        </section>
+
+        <section id="engine">
+            <h2>4. Engine data and scene API</h2>
+            <p><code>Engine.h</code> defines plain data types shared by the importer, renderer, Lua bindings, and scene-file code:</p>
+            <ul>
+                <li><code>EngineVertex</code>: one 3D position, normal, and 2D texture coordinate.</li>
+                <li><code>EngineTexture</code>: decoded RGBA pixels and dimensions, plus a GPU texture handle once uploaded.</li>
+                <li><code>EngineMesh</code>: mesh vertices/indices, base-color material, optional texture, associated glTF node, base node transform, and OpenGL VAO/VBO/IBO handles.</li>
+                <li><code>EngineModelNode</code>: imported node parentage and either a matrix or translation/quaternion/scale transform.</li>
+                <li><code>EngineAnimationSampler</code>, <code>EngineAnimationChannel</code>, and <code>EngineAnimationClip</code>: keyframe inputs, outputs, interpolation mode, target node/property, and clip duration.</li>
+                <li><code>EngineObject</code>: scene-visible name, position, Euler rotation in degrees, scale, color, and model/source metadata.</li>
+                <li><code>EngineModelInstance</code>: an object's imported model payload and its selected clip, playback time, and playing state.</li>
+            </ul>
+            <p><code>EngineScene</code> owns the object vector, imported model instances, cube/grid geometry, shader, and retired GPU meshes. Object IDs are one-based vector positions: the constructor seeds a cube, and <code>addCube()</code> returns the new object count. The setter methods return <code>false</code> for an invalid object ID; color is clamped to the range 0..1.</p>
+            <table>
+                <thead><tr><th>Method group</th><th>Methods</th><th>Purpose</th></tr></thead>
+                <tbody>
+                    <tr><td>Objects</td><td><code>addCube</code>, <code>addPolygon</code>, <code>setCubeVertex</code>, <code>pickObject</code>, <code>setPosition</code>, <code>setRotation</code>, <code>setScale</code>, <code>setColor</code>, <code>setObjectName</code>, <code>objectCount</code>, <code>object</code>, <code>clear</code></td><td>Create, inspect, modify, select, and remove scene contents.</td></tr>
+                    <tr><td>Models and clips</td><td><code>importGlb</code>, <code>animationCount</code>, <code>animationName</code>, <code>animationDuration</code>, <code>activeAnimation</code>, <code>animationTime</code>, <code>setAnimation</code>, <code>setAnimationPlaying</code>, <code>setAnimationTime</code>, <code>updateAnimations</code></td><td>Attach imported models and manage animation selection / playback.</td></tr>
+                    <tr><td>GPU and drawing</td><td><code>initializeOpenGl</code>, <code>releaseOpenGlResources</code>, <code>render</code></td><td>Create/release context-bound resources and draw a frame.</td></tr>
+                </tbody>
+            </table>
+            <p>When adding an engine feature, a useful pattern is to implement the behavior once in <code>EngineScene</code> and then expose it from the editor, Lua, or scene format as needed. That avoids separate implementations drifting apart.</p>
+        </section>
+
+        <section id="rendering">
+            <h2>5. OpenGL and libepoxy</h2>
+            <p>The app creates a GTK <code>GtkGLArea</code> requesting an OpenGL 3.2 context with a depth buffer. <code>&lt;epoxy/gl.h&gt;</code> supplies OpenGL declarations and runtime function dispatch. The engine uses GLSL 1.50 shaders, vertex array objects, vertex/index buffers, and textures.</p>
+            <h3>Renderer flow</h3>
+            <ol>
+                <li><code>onOpenGlRealize()</code> calls <code>gtk_gl_area_make_current()</code>, reports context errors, then calls <code>EngineScene::initializeOpenGl()</code>.</li>
+                <li>Initialization compiles and links the vertex/fragment shaders and creates cube and grid geometry. A failure returns <code>false</code> with an error message.</li>
+                <li><code>onOpenGlRender()</code> passes viewport dimensions, camera state, selected object, and optional vertex selection to <code>EngineScene::render()</code>. The renderer constructs view/projection/model transforms, clears color/depth buffers, then draws the floor grid and scene geometry.</li>
+                <li>Cube draw calls use the scene object's color. Model meshes use imported vertex attributes, indices, base color and optional base-color texture. Mesh buffers and textures are uploaded lazily when first drawn.</li>
+                <li><code>EngineScene::addPolygon()</code> sends <code>EngineVar::Polygon</code> data through <code>Rendering/EngineVarMeshRenderer</code>. The adapter reads each edge's first vertex, preserves UVs and supplied normals, generates a face normal when needed, and triangulates the ordered vertices as a fan. The resulting mesh is rendered through the same indexed model path.</li>
+                <li>The vertex shader applies the model-view-projection matrix. The fragment shader samples a texture when present and applies a basic fixed-direction diffuse light, except for the unlit grid.</li>
+                <li>During window shutdown, <code>onDeleteWindow()</code> makes the context current and asks the scene to release GPU objects. <code>clear()</code> queues model meshes whose GPU resources should be disposed on the next render or release operation.</li>
+            </ol>
+            <h3>Viewport navigation and editing</h3>
+            <ul>
+                <li>The camera state is an <code>EngineCamera</code> with world position, yaw, and pitch. While the 3D View has focus, W/S move along the horizontal view direction, A/D strafe, E rises, and Q descends. Right-button drag changes yaw and clamped pitch.</li>
+                <li>Left-click calls <code>EngineScene::pickObject()</code>, which builds a screen ray and intersects approximate world-space bounding spheres. It supports cube and imported-model selection but is not exact triangle picking.</li>
+                <li>Object Explorer, Resources, and Properties each sit in their own GTK 3 <code>GtkHandleBox</code>; drag the panel grip to detach a panel into a separate window.</li>
+                <li>The Properties gizmo applies fixed axis steps: 0.25 world units for Move, 5 degrees for Rotate, and 0.1 for Scale. Cube vertex mode exposes eight local corners and draws point handles; the chosen vertex position is edited numerically.</li>
+                <li>Cube drawing substitutes the editable local corner positions into the cube triangle list and recomputes face normals. Edited coordinates are persisted as <code>v0x</code> through <code>v7z</code> XML attributes; absent attributes retain the original cube geometry.</li>
+            </ul>
+            <p>Cube transforms compose translation, Z/Y/X Euler rotations, and scale. The renderer's matrix helpers are column-major. Imported node transforms use glTF translation/quaternion/scale or a matrix; animation updates the node transform relative to its imported base transform.</p>
+            <h3>Safe place to add drawing</h3>
+            <p>Keep OpenGL calls in <code>src/Engine/Engine.cpp</code> rendering/resource methods. Keep source-geometry conversion in <code>src/Rendering/</code>. A new mesh attribute must be wired through all three stages: <code>EngineVertex</code> data, buffer layout/attribute setup, and the shader inputs.</p>
+            <pre><code>// Example pattern inside a render method, with the GtkGLArea context current:
+glUseProgram(shaderProgram);
+glBindVertexArray(mesh.vertexArray);
+glDrawElements(GL_TRIANGLES,
+    static_cast&lt;GLsizei&gt;(mesh.indices.size()),
+    GL_UNSIGNED_INT, nullptr);
+glBindVertexArray(0);</code></pre>
+            <p class="callout warning">Do not call the example from an arbitrary GTK callback unless that callback first has the correct GL context current. In the current design, draw calls belong in <code>EngineScene::render()</code>.</p>
+        </section>
+
+        <section id="glb">
+            <h2>6. GLB model import</h2>
+            <p><code>GlbImporter.h</code> offers two <code>loadGlb()</code> overloads: one returns mesh data only; the other returns the complete <code>EngineModelData</code>, including nodes and clips. <code>EngineScene::importGlb()</code> uses the full model form, creates an <code>EngineObject</code>, stores the model's source path, and adds its meshes to the scene.</p>
+            <p>The importer in <code>GlbImporter.cpp</code> reads the GLB 2 binary header and JSON/BIN chunks, decodes accessors from buffer views, visits the selected scene's node tree, and maps primitive data into engine meshes. It can read the BIN chunk, external buffer/image paths, and base64 data URIs. GdkPixbuf decodes image bytes into RGBA pixels.</p>
+            <ul>
+                <li>Only triangle primitives are emitted. POSITION is required; NORMAL and TEXCOORD_0 are optional. Missing normals are generated from triangles; missing indices are generated sequentially.</li>
+                <li>Supported accessor shapes are SCALAR, VEC2, VEC3, and VEC4. Component data includes common signed/unsigned integer types and float, with normalized integer conversion and buffer-stride/range checks.</li>
+                <li>It reads PBR base-color factors and base-color textures; other vertex attributes and material maps are not wired into the renderer.</li>
+                <li>The implementation rejects sparse accessors and accessors without buffer views. It limits GLB files to 512 MiB, images to 8192 pixels per side and 64 megapixels, and rejects required extensions it does not support.</li>
+            </ul>
+            <h3>Where to extend import support</h3>
+            <ol>
+                <li>Accessor layout and decoding live in <code>readAccessor()</code> and its component conversion helpers.</li>
+                <li>Primitive attributes, indices, generated normals, and base-color materials are handled in <code>loadPrimitive()</code>.</li>
+                <li>Image/buffer URI resolution and GLB chunk validation are in the main <code>loadGlb()</code> flow.</li>
+                <li>Hierarchy traversal and animation parsing populate <code>EngineModelData</code>.</li>
+                <li>If a new attribute or material is imported, add its representation to <code>Engine.h</code> and make the renderer in <code>Engine.cpp</code> consume it too. Importing data alone will not make it visible.</li>
+            </ol>
+        </section>
+
+        <section id="animation">
+            <h2>7. Model animation</h2>
+            <p>Each imported clip contains samplers and channels. A channel targets a node and one of translation, rotation, or scale. The frame timer calls <code>EngineScene::updateAnimations(deltaTime)</code>; the engine advances the selected clip, wraps time at the clip duration, samples each channel, and composes animated node transforms for rendering.</p>
+            <ul>
+                <li><code>setAnimation()</code> selects a valid clip and resets its time.</li>
+                <li><code>setAnimationPlaying()</code> toggles advancement.</li>
+                <li><code>setAnimationTime()</code> clamps the requested position into the clip interval.</li>
+                <li>STEP holds the prior sample. LINEAR interpolates values; rotations are normalized after component-wise interpolation. CUBICSPLINE uses Hermite interpolation and tangents.</li>
+                <li>Animation channels that require matrix animation are unsupported; weight/morph channels are not applied. This is distinct from static node matrices, which can be imported.</li>
+            </ul>
+            <p>The inspector UI in <code>main.cpp</code> lists clips, toggles Play/Pause, and changes time with a slider. Use the existing engine methods rather than editing node data from GTK code.</p>
+        </section>
+
+        <section id="scenes">
+            <h2>8. XML scene files</h2>
+            <p><code>SceneDocument.cpp</code> converts the editable scene into a compact XML document. The root must be <code>&lt;scene version="1"&gt;</code>; each object is a <code>cube</code> or a <code>model</code> and stores name, transform, and RGB color. Cubes also store their eight local vertices; older files without vertex attributes load with default corners. A model also stores a GLB source path, made relative to the XML file's directory when possible.</p>
+            <pre><code>&lt;scene version="1"&gt;
+  &lt;object type="cube" name="Floor"
+          x="0" y="-1" z="0" rx="0" ry="0" rz="0"
+          sx="8" sy="0.2" sz="8" r="0.25" g="0.65" b="0.95" /&gt;
+  &lt;object type="model" name="Prop" source="models/prop.glb"
+          x="2" y="0" z="1" rx="0" ry="45" rz="0"
+          sx="1" sy="1" sz="1" r="0.25" g="0.65" b="0.95" /&gt;
+&lt;/scene&gt;</code></pre>
+            <p>Loading parses and validates the supported elements and finite numeric attributes, caps input at 8 MiB, resolves model sources relative to the scene path, and pre-validates model files before replacing the current scene. Missing numeric attributes use defaults (zero position/rotation, unit scale, and the default blue color). Saving escapes XML attribute text and writes numbers with enough precision for float round trips.</p>
+            <p>To add a persistent property, update the scene entry/defaults, XML parse and save paths, and then apply the property through the relevant <code>EngineScene</code> API. Add round-trip coverage in <code>tests/SceneDocumentTest.cpp</code>.</p>
+        </section>
+
+        <section id="input">
+            <h2>9. SDL2 controller and input service</h2>
+            <p>SDL is used in <code>InputService</code> for GameController devices. GTK supplies the editor's keyboard/mouse events and forwards them to the same service, so scripts query one consistent API rather than handling native events themselves.</p>
+            <ul>
+                <li><code>initialize()</code> starts SDL's game-controller subsystem and enables controller events; <code>poll()</code> pumps SDL, detects disconnection, opens a recognized controller, and updates button state.</li>
+                <li>Keyboard and mouse hold-state sets persist until release. Separate "pressed this frame" sets capture transitions and are cleared by <code>finishFrame()</code>.</li>
+                <li>Keyboard actions map W/A/S/D and arrows to movement, Space to jump, Enter to confirm, and Escape to cancel.</li>
+                <li>Gamepad movement uses the left stick and D-pad. A jumps, Start confirms, and B cancels. Stick axes are normalized with a dead zone.</li>
+                <li><code>axis("move_x")</code> and <code>axis("move_y")</code> combine keyboard and left-stick values and clamp the result to -1..1. Up/forward is positive <code>move_y</code>.</li>
+                <li><code>clearKeyboard()</code> and <code>clearMouse()</code> are called on focus loss so a key or button does not remain stuck when the window stops receiving events.</li>
+            </ul>
+            <p>When adding an action, update <code>GameAction</code>, the keyboard mapping, the controller mapping, and the string-based <code>isDown()</code> mapping. Add corresponding Lua bindings only if scripts should be able to query it. For a new axis, extend <code>InputService::axis()</code>.</p>
+        </section>
+
+        <section id="lua">
+            <h2>10. Lua 5.4 scripting</h2>
+            <p><code>LuaRuntime</code> owns a <code>lua_State</code> and references the editor's scene and input service. It explicitly opens base, table, string, math, and UTF-8 libraries; it removes <code>dofile</code> and <code>loadfile</code>, and does not open Lua's separate io, os, package, or debug libraries.</p>
+            <p>Native C++ functions are installed in two global tables:</p>
+            <table>
+                <thead><tr><th>Lua table</th><th>Available functions</th></tr></thead>
+                <tbody>
+                    <tr><td><code>engine</code></td><td><code>clear_scene()</code>, <code>add_cube(name, x?, y?, z?)</code>, <code>set_position(id, x, y, z)</code>, <code>set_rotation(id, x, y, z)</code>, <code>set_color(id, r, g, b)</code></td></tr>
+                    <tr><td><code>input</code></td><td><code>is_down(action)</code>, <code>axis(name)</code>, <code>gamepad_connected()</code>, <code>getkeypressed(key)</code>/<code>get_key_pressed(key)</code>, <code>is_key_down(key)</code>, <code>getgamepadpressed(button)</code>/<code>get_gamepad_pressed(button)</code>, <code>is_gamepad_down(button)</code>, mouse position functions and mouse pressed/down functions (both compact and snake-case aliases where registered).</td></tr>
+                </tbody>
+            </table>
+            <p>A script may define <code>update(delta_time)</code>. <code>runFile()</code> clears the scene and prior update function, loads and executes the file, then detects whether the script defined a new update function. Every frame the editor calls <code>update()</code> with seconds since the previous tick. A Lua error is returned to the editor and stops further update calls.</p>
+            <pre><code>engine.clear_scene()
+local cube = engine.add_cube("Mover", 0, 0, 0)
+local x = 0
+
+function update(delta_time)
+    if input.is_down("right") then
+        x = x + 2 * delta_time
+    end
+    if input.is_down("left") then
+        x = x - 2 * delta_time
+    end
+    engine.set_position(cube, x, 0, 0)
+end</code></pre>
+            <h3>Adding a Lua function</h3>
+            <p>Each C callback receives a <code>lua_State*</code>. Use Lua's <code>luaL_check*</code> helpers to validate required arguments, use <code>lua_push*</code> to return values, and return the number of Lua return values. The closure stores a pointer to the relevant engine/service instance as an upvalue.</p>
+            <pre><code>int setScale(lua_State* state)
+{
+    const int id = static_cast&lt;int&gt;(luaL_checkinteger(state, 1));
+    const float x = static_cast&lt;float&gt;(luaL_checknumber(state, 2));
+    const float y = static_cast&lt;float&gt;(luaL_checknumber(state, 3));
+    const float z = static_cast&lt;float&gt;(luaL_checknumber(state, 4));
+    if (!getScene(state).setScale(id, x, y, z))
+        return luaL_error(state, "set_scale: unknown object id %d", id);
+    return 0;
+}
+
+// In LuaRuntime's constructor, while the engine table is on the stack:
+registerSceneFunction(state_, scene_, "set_scale", setScale);</code></pre>
+            <p>To implement that example, add the callback in <code>LuaRuntime.cpp</code>, register it in the existing <code>engine</code> table, and make sure <code>EngineScene::setScale()</code> is the authoritative operation. Update the Lua API documentation/example when changing what scripts can call.</p>
+            <p class="callout warning"><strong>Security note:</strong> restricting standard libraries reduces accidental access, but does not automatically make arbitrary Lua scripts a secure sandbox. Audit newly exposed native functions and any new filesystem, process, or network access.</p>
+        </section>
+
+        <section id="audio">
+            <h2>11. SDL2_mixer audio</h2>
+            <p>Audio is initialized in <code>main()</code>. Puppy3D initializes SDL audio, sets the FluidSynth SoundFont path if <code>res/sf2/gm.sf2</code> exists, asks SDL2_mixer to initialize MIDI support, and opens a 44.1 kHz stereo output device. Audio or MIDI can be unavailable without preventing the rest of the editor from starting.</p>
+            <p><code>updateProperties()</code> enables Play Audio for recognized WAV, OGG, MP3, FLAC, OPUS, and MIDI extensions when the required backend is available. The play callback frees any previously loaded music, loads the selected path with <code>Mix_LoadMUS()</code>, and starts it with <code>Mix_PlayMusic()</code>. Stop halts playback. Window destruction halts and frees music, closes audio, quits mixer support, and then shuts SDL down.</p>
+            <pre><code>// Existing playback pattern from main.cpp:
+Mix_Music* music = Mix_LoadMUS(path.c_str());
+if (!music) {
+    // Report Mix_GetError() through the application's normal error/status path.
+} else if (Mix_PlayMusic(music, 0) == -1) {
+    Mix_FreeMusic(music);
+    music = nullptr;
+}
+// On cleanup: Mix_HaltMusic(); Mix_FreeMusic(music); Mix_CloseAudio();</code></pre>
+            <p>If adding effects rather than background music, use SDL2_mixer's chunk API (<code>Mix_Chunk</code>) and track/free chunks just as carefully. Keep library initialization and cleanup paired; report <code>Mix_GetError()</code> instead of silently treating a failed load/play as success.</p>
+        </section>
+
+        <section id="build">
+            <h2>12. Build and dependency wiring</h2>
+            <p>The Makefile recursively compiles every <code>src/**/*.cpp</code> file as C++17, so implementation modules can live in feature subfolders. It asks pkg-config for compile/link flags for GTK 3, SDL2_mixer, Lua 5.4, and epoxy. OpenGL's platform link library is added separately: <code>opengl32</code> on Windows and pkg-config's <code>gl</code> on Linux.</p>
+            <pre><code>make
+make test
+make clean</code></pre>
+            <p>When adding a library, update its platform package installation instructions as well as the Makefile's pkg-config flags or link library. The application binary is written to <code>export/windows/bin/</code> or <code>export/linux/bin/</code>, and <code>export-resources</code> copies <code>res/</code> beside it.</p>
+        </section>
+
+        <section id="modifying">
+            <h2>13. How to make common changes</h2>
+            <table>
+                <thead><tr><th>Goal</th><th>Typical files and steps</th></tr></thead>
+                <tbody>
+                    <tr><td>Add a scene property</td><td>Add storage to <code>EngineObject</code> in <code>Engine.h</code>; add/validate a setter in <code>Engine.cpp</code>; expose it in the GTK inspector and/or Lua; serialize it in <code>SceneDocument.cpp</code>; add persistence tests.</td></tr>
+                    <tr><td>Add a renderable attribute</td><td>Extend <code>EngineVertex</code> or <code>EngineMesh</code>; decode it in <code>GlbImporter.cpp</code>; update GPU attribute setup and GLSL in <code>Engine.cpp</code>; validate with a model that uses it.</td></tr>
+                    <tr><td>Add a Lua engine command</td><td>Implement a checked Lua C callback in <code>LuaRuntime.cpp</code>, register it in the <code>engine</code> table, and route it to an <code>EngineScene</code> method. Update the example/API section in this guide.</td></tr>
+                    <tr><td>Add a keyboard/gamepad action</td><td>Extend <code>GameAction</code>, keyboard mapping, controller mapping, string action mapping, and a Lua test/example if scripts need it.</td></tr>
+                    <tr><td>Add a persistent scene feature</td><td>Extend parse state/defaults, XML read/write, and object application in <code>SceneDocument.cpp</code>; cover save-load round trips in <code>tests/SceneDocumentTest.cpp</code>.</td></tr>
+                    <tr><td>Add an editor control</td><td>Create it in <code>buildWindow()</code>, connect a GTK callback, keep it synchronized with engine state, and queue a GL redraw after visible scene changes.</td></tr>
+                </tbody>
+            </table>
+            <p>After a code change, build with <code>make</code>; use <code>make test</code> for scene-document and importer integration tests. For a rendering change, also run the editor and inspect the 3D view because ordinary scene serialization tests do not exercise a real GL context.</p>
+        </section>
+
+        <section id="limits">
+            <h2>14. Current scope and limitations</h2>
+            <ul>
+                <li>Only cube corner vertices are editable. Imported GLB vertices and topology are read-only; picking uses approximate bounds rather than triangle intersections.</li>
+                <li>EngineVar polygons are rendered as triangle fans from their ordered edge starts; this is suitable for convex polygons, while concave polygon triangulation is not implemented. Generated polygons are transient and are omitted from version 1 XML scene saves.</li>
+                <li>The renderer is a prototype: a fixed directional diffuse light and base-color texture/factor, not a complete physically based renderer.</li>
+                <li>GLB extensions, sparse accessors, skinning, morph targets, Draco compression, additional material maps, and non-triangle primitives are not supported.</li>
+                <li>Only translation, rotation, and scale animation channels are evaluated. Skeletal deformation and morph weights are not applied.</li>
+                <li>Lua has a deliberately small opened library set, but additions to the native API need the same validation and error handling as C++-facing inputs.</li>
+                <li>Scene format version 1 currently records objects and their transforms/colors/source paths; it does not save animation playback state or arbitrary editor state.</li>
+            </ul>
+            <p>These are implementation boundaries, not just UI omissions. A feature advertised in the editor should be implemented across the data model, importer/persistence path as relevant, renderer, and tests.</p>
+        </section>
+    </main>
+    <footer>
+        <p class="muted">Source files are the final authority if this guide and code ever disagree. Keep this guide updated when changing public engine or scripting behavior.</p>
+    </footer>
+</body>
+</html>
